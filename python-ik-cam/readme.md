@@ -1,0 +1,1 @@
+open temrinal and run `uv run main.py toolpath.txt`

@@ -1,0 +1,4 @@
+#the out orientation uses roll, pitch from imu and yaw from cam
+INPUT COMMAND,OUTPUT_POS,OUTPUT_ORI
+"0 0 0 2 0 0","-0.51,-1.65,-0.03,","1.79,0.73,-0.18"
+"0 0 0 2 0 0","-0.55,-1.67,-0.04,","1.79,0.73,-0.26"

@@ -1,0 +1,2 @@
+#the out orientation uses roll, pitch from imu and yaw from cam
+INPUT COMMAND,OUTPUT_POS,OUTPUT_ORI
