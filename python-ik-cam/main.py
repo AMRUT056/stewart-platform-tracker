@@ -20,11 +20,12 @@ import os
 
 from pymodbus.client import ModbusSerialClient
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION ---Q
 # Robot / OpenCM Port
-ROBOT_PORT = 'COM6'      
+ROBOT_PORT = 'COM7'      
 # IMU Modbus Port (From the first script)
-IMU_PORT = 'COM12'       
+IMU_PORT = 'COM12' \
+''       
 IMU_BAUDRATE = 9600
 IMU_SLAVE_ID = 0x50
 CAM_ID = 0
@@ -34,7 +35,7 @@ TOOL_DELAY = 0.2
 TAG_SIZE_CM = 9.0        # Main Tag Size
 TARGET_ID = 0            # Main Tag ID
 TAG_OFFSET_ID = 3        # Validation Tag ID
-WAIT_TIME = 5
+WAIT_TIME = 5              #update this to bool or a block that waits till the imu is kinda steady
 TAG3_EFFECTIVE_DIST_CM = 18.63 
 
 # Logging
@@ -184,10 +185,54 @@ modbus_client = init_imu()
 show_me = ''
 datas = [0,0,0,0,0,0]
 
+def ang_diff(a, b):
+    """Calculates the shortest angular difference between two angles."""
+    return 180 - abs(abs(a - b) - 180)
+
+def wait_imu(settle_time=0.5, tolerance=0.5, timeout=15.0):
+    """
+    Waits for the physical movement to finish.
+    settle_time: How long the IMU must remain still to be considered "done".
+    tolerance: Max degree change per ~0.1s to be considered "still".
+    """
+    if not modbus_client:return
+    # 1. Wait a split second to let the Arduino process and motors start moving
+    time.sleep(0.2) 
+    
+    start_time = time.time()
+    last_move_time = time.time()
+    prev_readings = get_imu_readings(modbus_client)
+    
+    while time.time() - start_time < timeout:
+        time.sleep(0.1) # Poll at roughly 10Hz
+        current_readings = get_imu_readings(modbus_client)
+        
+        if not current_readings or not prev_readings:
+            prev_readings = current_readings
+            continue
+            
+        # 2. Calculate how much the IMU moved since the last poll
+        d_roll = ang_diff(current_readings['roll'], prev_readings['roll'])
+        d_pitch = ang_diff(current_readings['pitch'], prev_readings['pitch'])
+        d_yaw = ang_diff(current_readings['yaw'], prev_readings['yaw'])
+        
+        # 3. If movement is detected, reset the "settling" timer
+        if d_roll > tolerance or d_pitch > tolerance or d_yaw > tolerance:
+            last_move_time = time.time()
+        else:
+            # 4. If no movement is detected, check if it has been still long enough
+            if time.time() - last_move_time >= settle_time:
+                return True # Movement has officially finished!
+                
+        prev_readings = current_readings # Update for the next loop
+        
+    print("Warning: Movement timed out before settling.")
+    return False
+
 def send_data(input_file, arduino_conn, wanandie=0):
     global last_command, show_me, datas
     datas_all = None
-    time.sleep(WAIT_TIME * 2)
+    # time.sleep(WAIT_TIME * 2)
     try:
         with open(input_file, "r") as nf:
             datas_all = nf.readlines()
@@ -207,10 +252,11 @@ def send_data(input_file, arduino_conn, wanandie=0):
             show_me = f"Moving to: {last_command}"
             print(f"sending {i}")
             arduino_conn.write(i.encode())
-            time.sleep(WAIT_TIME)
+            wait_imu()
     else:
         print("ERROR no arduino to send data to")            
     print("done")
+    show_me=''
     if wanandie: raise
             
 if len(sys.argv) > 1:
