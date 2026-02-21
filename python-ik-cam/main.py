@@ -34,7 +34,6 @@ TOOL_DELAY = 0.2
 TAG_SIZE_CM = 9.0        # Main Tag Size
 TARGET_ID = 0            # Main Tag ID
 TAG_OFFSET_ID = 3        # Validation Tag ID
-WAIT_TIME = 5              #update this to bool or a block that waits till the imu is kinda steady
 TAG3_EFFECTIVE_DIST_CM = 18.63 
 
 # Logging
