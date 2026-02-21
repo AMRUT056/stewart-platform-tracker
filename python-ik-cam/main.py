@@ -20,12 +20,11 @@ import os
 
 from pymodbus.client import ModbusSerialClient
 
-# --- CONFIGURATION ---Q
+# --- CONFIGURATION ---
 # Robot / OpenCM Port
 ROBOT_PORT = 'COM7'      
 # IMU Modbus Port (From the first script)
-IMU_PORT = 'COM12' \
-''       
+IMU_PORT = 'COM12'        
 IMU_BAUDRATE = 9600
 IMU_SLAVE_ID = 0x50
 CAM_ID = 0
@@ -46,6 +45,12 @@ with open(out_file, "a") as f:
     f.write('#the out orientation uses roll, pitch from imu and yaw from cam\n')
     f.write(HEADER + "\n")
 
+# --- NEW EXTRA CSV SETUP ---
+ALL_DATA_HEADER = "TIMESTAMP,COMMAND,RAW_CAM_X,RAW_CAM_Y,RAW_CAM_Z,RAW_CAM_YAW,CAL_CAM_X,CAL_CAM_Y,CAL_CAM_Z,CAL_CAM_YAW,RAW_IMU_ROLL,RAW_IMU_PITCH,RAW_IMU_YAW,CAL_IMU_ROLL,CAL_IMU_PITCH,CAL_IMU_YAW"
+out_file_all = f"csv_outputs/all_data_{time.time()}.csv"
+with open(out_file_all, "a") as f:
+    f.write(ALL_DATA_HEADER + "\n")
+
 # --- MODBUS / IMU HELPER FUNCTIONS ---
 def to_signed_16(n):
     n = n & 0xFFFF
@@ -60,21 +65,17 @@ def normalize_angle(angle):
 def get_imu_readings(client):
     """Reads registers from Modbus IMU and returns dictionary of values."""
     try:
-        # Address 0x34 (52), count 12 registers
         rr = client.read_holding_registers(address=0x34, count=12, device_id=IMU_SLAVE_ID)
         if rr.isError():
             return None
         
         regs = rr.registers
         data = {}
-        # We primarily need Roll, Pitch, Yaw (Registers 9, 10, 11)
-        # Note: Registers index 9 corresponds to regs[9] in the list
         data['roll']  = to_signed_16(regs[9])  / 32768.0 * 180.0
         data['pitch'] = to_signed_16(regs[10]) / 32768.0 * 180.0
         data['yaw']   = to_signed_16(regs[11]) / 32768.0 * 180.0
         return data
     except Exception as e:
-        # print(f"IMU Read Error: {e}")
         return None
 
 # --- OPENCV / MATH HELPER FUNCTIONS ---
@@ -122,10 +123,8 @@ last_command = ''
 command_buffer = ""
 typing_mode = False
 
-# Tag 3 Offset Vector
 TAG3_OFFSET_VEC = np.array([[TAG3_EFFECTIVE_DIST_CM], [0.0], [0.0]], dtype=np.float32)
 
-# Camera Calibration
 CALIB_WIDTH = 1280
 CALIB_HEIGHT = 720
 fx = 704.3734573939229904
@@ -134,7 +133,6 @@ cx = 620.0124877195135014
 cy = 344.2297177120070160
 dist_coeffs = np.zeros((5, 1))
 
-# 3D points for Tag 0
 half_size = TAG_SIZE_CM / 2.0
 obj_points = np.array([
     [-half_size, -half_size, 0], 
@@ -152,19 +150,15 @@ def init_robot():
     try:
         ard = serial.Serial(port=ROBOT_PORT, baudrate=115200, timeout=1)
         time.sleep(1) 
-        
         print(f"Sending HOME command...")
         ard.write(b'0 0 0 0 0 0\n')
-        
         print("Waiting 5 seconds for movement...")
         time.sleep(2)
-        
         ard.reset_input_buffer()
         ard.reset_output_buffer()
         ard.timeout = 0 
         print("Robot Ready.")
         return ard
-        
     except serial.SerialException as e:
         print(f"Error opening Robot serial port: {e}. Running in visual-only mode.")
         return None
@@ -186,45 +180,33 @@ show_me = ''
 datas = [0,0,0,0,0,0]
 
 def ang_diff(a, b):
-    """Calculates the shortest angular difference between two angles."""
     return 180 - abs(abs(a - b) - 180)
 
 def wait_imu(settle_time=0.5, tolerance=0.5, timeout=15.0):
-    """
-    Waits for the physical movement to finish.
-    settle_time: How long the IMU must remain still to be considered "done".
-    tolerance: Max degree change per ~0.1s to be considered "still".
-    """
     if not modbus_client:return
-    # 1. Wait a split second to let the Arduino process and motors start moving
     time.sleep(0.2) 
-    
     start_time = time.time()
     last_move_time = time.time()
     prev_readings = get_imu_readings(modbus_client)
     
     while time.time() - start_time < timeout:
-        time.sleep(0.1) # Poll at roughly 10Hz
+        time.sleep(0.1)
         current_readings = get_imu_readings(modbus_client)
-        
         if not current_readings or not prev_readings:
             prev_readings = current_readings
             continue
             
-        # 2. Calculate how much the IMU moved since the last poll
         d_roll = ang_diff(current_readings['roll'], prev_readings['roll'])
         d_pitch = ang_diff(current_readings['pitch'], prev_readings['pitch'])
         d_yaw = ang_diff(current_readings['yaw'], prev_readings['yaw'])
         
-        # 3. If movement is detected, reset the "settling" timer
         if d_roll > tolerance or d_pitch > tolerance or d_yaw > tolerance:
             last_move_time = time.time()
         else:
-            # 4. If no movement is detected, check if it has been still long enough
             if time.time() - last_move_time >= settle_time:
-                return True # Movement has officially finished!
+                return True 
                 
-        prev_readings = current_readings # Update for the next loop
+        prev_readings = current_readings 
         
     print("Warning: Movement timed out before settling.")
     return False
@@ -232,7 +214,6 @@ def wait_imu(settle_time=0.5, tolerance=0.5, timeout=15.0):
 def send_data(input_file, arduino_conn, wanandie=0):
     global last_command, show_me, datas
     datas_all = None
-    # time.sleep(WAIT_TIME * 2)
     try:
         with open(input_file, "r") as nf:
             datas_all = nf.readlines()
@@ -281,7 +262,7 @@ print(f"Camera Resolution: {w}x{h}")
 scale_x = w / CALIB_WIDTH
 scale_y = h / CALIB_HEIGHT
 current_camera_matrix = np.array([
-    [fx * scale_x, 0.0,           cx * scale_x],
+    [fx * scale_x, 0.0,          cx * scale_x],
     [0.0,          fy * scale_y, cy * scale_y],
     [0.0,          0.0,          1.0]
 ], dtype=np.float32)
@@ -294,7 +275,7 @@ detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
 smoother = PositionSmoother(alpha=0.15) 
 
-current_imu_data = [0.0, 0.0, 0.0] # Roll, Pitch, Yaw
+current_imu_data = [0.0, 0.0, 0.0]
 
 start_cam_angle_ref = None 
 last_cam_angle = None
@@ -306,52 +287,35 @@ calib_z = 0.0
 calib_yaw_cam = 0.0
 calib_roll_imu = 0.0
 calib_pitch_imu = 0.0
+calib_yaw_imu = 0.0 # Added IMU Yaw offset
 
 print("\nTracking started. Press 'q' to quit. Press 'c' to recalibrate.")
 
 while True:
-    
-    # --- 1. READ IMU (MODBUS) ---
     if modbus_client:
         imu_raw = get_imu_readings(modbus_client)
         if imu_raw:
-            # We treat the values read here as "Absolute" relative to the sensor
-            # The calibration logic below will handle taring.
             current_imu_data = [imu_raw['roll'], imu_raw['pitch'], imu_raw['yaw']]
 
-            # Log to CSV if we are moving (have a last command)
-            if last_command:
-                # Basic debouncing/rate limiting could be added here if needed
-                pass 
-                
-    # --- 2. LOGGING LOGIC (Preserved from original) ---
-    # The original script logged inside the serial read block. 
-    # Since we moved IMU reading out, we check here if we have fresh data and a command.
     if last_command and modbus_client:
          try:
-             # We write one line per loop if command exists, essentially.
-             # This might be verbose, but matches previous logic flow roughly.
             with open(out_file, "a") as f:
                 f.write(f'"{last_command}","')
                 if isinstance(needed_data[0], (list, tuple)):
                     for i in needed_data[0]:
                         f.write(f"{i:.2f},") 
                 else:
-                    f.write("0.0,0.0,0.0,") # Fallback
-                
-                # Use current IMU data
+                    f.write("0.0,0.0,0.0,")
                 f.write(f'","{current_imu_data[0]:.2f},{current_imu_data[1]:.2f},{needed_data[1]:.2f}"\n')
          except Exception as e:
              pass
 
-    # --- 3. CAMERA PROCESS ---
     ret, frame = cap.read()
     if not ret: break
     
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, rejected = detector.detectMarkers(gray)
 
-    # Draw Optical Center
     scaled_cx = int(cx * scale_x)
     scaled_cy = int(cy * scale_y)
     cv2.drawMarker(frame, (scaled_cx, scaled_cy), (0, 255, 255), cv2.MARKER_CROSS, 20, 2)
@@ -366,8 +330,6 @@ while True:
     if ids is not None:
         ids = ids.flatten()
         for i, tag_id in enumerate(ids):
-            
-            # Main Tracking Tag
             if tag_id == TARGET_ID:
                 tag_detected = True
                 current_corners = corners[i].reshape((4, 2))
@@ -399,7 +361,6 @@ while True:
                     cv2.polylines(frame, [current_corners.astype(int)], True, (0, 255, 0), 2)
                     cv2.drawFrameAxes(frame, current_camera_matrix, dist_coeffs, rvec, tvec, TAG_SIZE_CM)
 
-            # Validation Tag (Tag 3)
             elif tag_id == TAG_OFFSET_ID and rvec_0 is not None:
                     R_0, _ = cv2.Rodrigues(rvec_0)
                     T3_expected = tvec_0 + R_0 @ TAG3_OFFSET_VEC
@@ -409,43 +370,47 @@ while True:
                     cv2.circle(frame, tuple(exp_pt), 5, (255, 255, 255), -1)
                     cv2.polylines(frame, [corners[i].astype(int)], True, (255, 0, 0), 2)
 
-    # --- CALIBRATION LOGIC ---
     if not calib_done and tag_detected:
         print("--- PERFORMING ZERO CALIBRATION ---")
         calib_x = raw_x
         calib_y = raw_y
         calib_z = raw_z
         calib_yaw_cam = raw_cam_yaw
-        # Zero the IMU based on current readings
         calib_roll_imu = current_imu_data[0]
         calib_pitch_imu = current_imu_data[1]
+        calib_yaw_imu = current_imu_data[2]
         calib_done = True
         print(f"Offsets set. X:{calib_x:.2f}, Yaw:{calib_yaw_cam:.2f}, IMU_R:{calib_roll_imu:.2f}")
 
-    # --- DISPLAY TABLE ---
     if calib_done and tag_detected:
-        # Position Smoothing
         smooth_pos = smoother.update([raw_x, raw_y, raw_z])
         
-        # Raw (Absolute) values
         abs_x, abs_y, abs_z = smooth_pos
         abs_yaw_cam = raw_cam_yaw
         abs_roll_imu = current_imu_data[0]
         abs_pitch_imu = current_imu_data[1]
+        abs_yaw_imu = current_imu_data[2]
 
-        # Calibrated (Relative) values
         disp_x = abs_x - calib_x
         disp_y = abs_y - calib_y
         disp_z = abs_z - calib_z
         disp_yaw_cam = abs_yaw_cam - calib_yaw_cam
         
-        # Apply normalization to IMU differences to handle wrapping if necessary
-        # (Though roll/pitch usually don't wrap in this context, good practice)
         disp_roll_imu = normalize_angle(abs_roll_imu - calib_roll_imu)
         disp_pitch_imu = normalize_angle(abs_pitch_imu - calib_pitch_imu)
+        disp_yaw_imu = normalize_angle(abs_yaw_imu - calib_yaw_imu)
         
         needed_data[0] = (disp_x, disp_y, disp_z)
         needed_data[1] = disp_yaw_cam
+
+        # --- WRITE ALL DATA TO EXTRA CSV ---
+        if last_command:
+            with open(out_file_all, "a") as f:
+                f.write(f"{time.time():.3f},{last_command},"
+                        f"{abs_x:.3f},{abs_y:.3f},{abs_z:.3f},{abs_yaw_cam:.3f},"
+                        f"{disp_x:.3f},{disp_y:.3f},{disp_z:.3f},{disp_yaw_cam:.3f},"
+                        f"{abs_roll_imu:.3f},{abs_pitch_imu:.3f},{abs_yaw_imu:.3f},"
+                        f"{disp_roll_imu:.3f},{disp_pitch_imu:.3f},{disp_yaw_imu:.3f}\n")
         
         # --- DRAW TABLE ON SCREEN ---
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -455,7 +420,6 @@ while True:
         color_raw = (0, 255, 255)   
         color_cal = (0, 255, 0)     
         
-        # Table Layout
         x_label = 20
         x_input = 20+140
         x_raw = 160  + 140
@@ -463,14 +427,12 @@ while True:
         y_start = 40 
         step = 25
 
-        # Headers
         cv2.putText(frame, "PARAM", (x_label, y_start), font, scale, color_lbl, thick)
         cv2.putText(frame, "INPUT", (x_input, y_start), font, scale, (255, 255, 255), thick)
         cv2.putText(frame, "RAW",   (x_raw,   y_start), font, scale, color_raw, thick)
         cv2.putText(frame, "CALIB", (x_cal,   y_start), font, scale, color_cal, thick)
         cv2.line(frame, (x_label, y_start + 5), (x_cal + 60, y_start + 5), (255,255,255), 1)
 
-        # Data Rows
         data_rows = [
             ("X",       datas[0], abs_x,       disp_x),
             ("Y",       datas[1], abs_y,       disp_y),
@@ -484,7 +446,6 @@ while True:
             y = y_start + step + (i * step)
             cv2.putText(frame, label, (x_label, y), font, scale, color_lbl, thick)
             cv2.putText(frame, f"{input_val:.3f}", (x_input, y), font, scale, (255, 255, 255), thick)
-            
             cv2.putText(frame, f"{raw_val:.2f}", (x_raw, y), font, scale, color_raw, thick)
             cv2.putText(frame, f"{cal_val:.2f}", (x_cal, y), font, scale, color_cal, thick)
         
@@ -496,7 +457,6 @@ while True:
         cv2.putText(frame, "WAITING FOR TAG (Running Calibration Sequence)...", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         smoother.prev_pos = None
 
-    # --- COMMAND INPUT OVERLAY ---
     if typing_mode:
         cv2.putText(frame, f"Cmd: {command_buffer}_", (20, h - 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (222, 86, 160), 2)
@@ -504,7 +464,6 @@ while True:
     cv2.imshow("Stewart Platform Tracker", frame)
     key = cv2.waitKey(1) & 0xFF
 
-    # --- KEYBOARD HANDLERS ---
     if key == ord('?') or key == ord('/'):
         typing_mode = True
         command_buffer = ""
@@ -514,23 +473,19 @@ while True:
         command_buffer=last_command
         
     elif key == ord('c'): 
-        # Recalibration logic
         print("\n--- RECALIBRATION TRIGGERED ---")
         calib_done = False
         start_cam_angle_ref = None 
         last_cam_angle = None
         
-        # Send Home Command if arduino connected
         if arduino:
             arduino.write(b'0 0 0 0 0 0\n')
             print("Homing command sent...")
-            # Note: We don't sleep 5s here to keep UI responsive, 
-            # but usually you'd wait for physical homing.
         else:
             print("No Arduino connected for Homing.")
 
     elif typing_mode:
-        if key == 13: # Enter
+        if key == 13: 
             if arduino:
                 arduino.write((command_buffer + '\n').encode())
                 print(f"Sent: {command_buffer}")
